@@ -270,6 +270,48 @@
 		WIFI,host_wake_irq = <&gpio4 30 GPIO_ACTIVE_HIGH>;
 		status = "okay";
 	}; */
+	vga_regulator: vga-regulator {
+		compatible = "regulator-fixed";
+		enable-active-high;
+		gpio = <&gpio7 2 GPIO_ACTIVE_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&vga_enabled_h>;
+		regulator-name = "vga_regulator";
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	sda7123: vga-encoder {
+		compatible = "adi,adv7123";
+		ddc-i2c-bus = <&i2c4>;
+		vga-gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>;
+		vga-supply = <&vcc_io>;
+		
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			
+			vga_in: port@0 {
+				reg = <0>;
+				
+				#address-cells = <1>;
+				#size-cells = <0>;
+				
+				vga_in_lvds: endpoint@0 {
+					reg = <0>;
+					remote-endpoint = <&lvds_out_vga>;
+				};
+				vga_in_vopb: endpoint@1 {
+					reg = <1>;
+					remote-endpoint = <&vopb_out_vga>;
+				};
+				vga_in_vopl: endpoint@2 {
+					reg = <2>;
+					remote-endpoint = <&vopl_out_vga>;
+				};
+			};
+		};
+	};
 };
 
 &cpu0 {
@@ -316,6 +358,30 @@
 	#sound-dai-cells = <0>;
 	ddc-i2c-bus = <&i2c5>;
 	status = "okay";
+};
+
+&lvds {
+	rockchip,data-mapping = "jeida";
+	rockchip,data-width = <24>;
+	rockchip,output = "rgb";
+	status = "okay";
+	
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		
+		lvds_out: port@1 {
+			reg = <1>;
+			
+			#address-cells = <1>;
+			#size-cells = <0>;
+			
+			lvds_out_vga: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&vga_in_lvds>;
+			};
+		};
+	};
 };
 
 &i2s  {
@@ -629,6 +695,12 @@
 			rockchip,pins = <4 19 RK_FUNC_GPIO &pcfg_pull_none>;
 		};
 	};
+	
+	vga {
+		vga_enabled_h: vga-enabled-h {
+			rockchip,pins = <7 2 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
 };
 
 &saradc {
@@ -724,12 +796,26 @@
 	status = "okay";
 };
 
+&vopb_out {
+	vopb_out_vga: endpoint@4 {
+		reg = <4>;
+		remote-endpoint = <&vga_in_vopb>;
+	};
+};
+
 &vopb_mmu {
 	status = "okay";
 };
 
 &vopl {
 	status = "okay";
+};
+
+&vopl_out {
+	vopl_out_vga: endpoint@4 {
+		reg = <4>;
+		remote-endpoint = <&vga_in_vopl>;
+	};
 };
 
 &vopl_mmu {
