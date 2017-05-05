@@ -44,6 +44,10 @@
 #define encoder_to_lvds(c) \
 		container_of(c, struct rockchip_lvds, encoder)
 
+#define bridge_to_lvds(c) \
+			container_of(c, struct rockchip_lvds, bridge)
+
+
 /*
  * @grf_offset: offset inside the grf regmap for setting the rockchip lvds
  */
@@ -67,6 +71,7 @@ struct rockchip_lvds {
 	struct drm_panel *panel;
 	struct drm_connector connector;
 	struct drm_encoder encoder;
+	struct drm_bridge bridge;
 
 	struct mutex suspend_lock;
 	int suspend;
@@ -418,6 +423,136 @@ static struct drm_encoder_funcs rockchip_lvds_encoder_funcs = {
 	.destroy = rockchip_lvds_encoder_destroy,
 };
 
+static void rockchip_lvds_bridge_mode_set(struct drm_bridge *bridge,
+					  struct drm_display_mode *mode,
+					  struct drm_display_mode *adjusted)
+{
+	struct rockchip_lvds *lvds = bridge_to_lvds(bridge);
+    rockchip_lvds_encoder_mode_set(&lvds->encoder, mode, adjusted);
+}
+
+static void rockchip_lvds_bridge_enable(struct drm_bridge *bridge)
+{
+	struct rockchip_lvds *lvds = bridge_to_lvds(bridge);
+	struct drm_connector *connector;
+	int ret, connector_type = DRM_MODE_CONNECTOR_Unknown;
+	struct rockchip_crtc_state *s;
+  
+	mutex_lock(&lvds->suspend_lock);
+  
+	if (!lvds->suspend)
+		goto out;
+  
+	ret = rockchip_lvds_poweron(lvds);
+	if (ret < 0) {
+		dev_err(lvds->dev, "could not enable lvds\n");
+		goto out;
+	}
+  
+	lvds->suspend = false;
+out:
+	mutex_unlock(&lvds->suspend_lock);
+  
+	if (!bridge->encoder->crtc)
+		return;
+  
+	list_for_each_entry(connector, &bridge->dev->mode_config.connector_list,
+			  head) {
+		if (connector->encoder == bridge->encoder)
+			connector_type = connector->connector_type;
+	}
+  
+	s = to_rockchip_crtc_state(bridge->encoder->crtc->state);
+	s->output_mode = ROCKCHIP_OUT_MODE_P888;
+	s->output_type = connector_type;
+  
+/*
+	ret = rockchip_drm_crtc_mode_config(bridge->encoder->crtc,
+						connector_type,
+						ROCKCHIP_OUT_MODE_P888);
+	if (ret < 0) {
+		dev_err(lvds->dev, "Could not set crtc mode config: %d\n", ret);
+		return;
+	}
+*/
+  
+	ret = rockchip_lvds_set_vop_source(lvds, bridge->encoder);
+	if (ret < 0) {
+		dev_err(lvds->dev, "Could not set vop source: %d\n", ret);
+		return;
+	}
+  
+}
+
+static void rockchip_lvds_bridge_disable(struct drm_bridge *bridge)
+{
+	struct rockchip_lvds *lvds = bridge_to_lvds(bridge);
+
+	mutex_lock(&lvds->suspend_lock);
+
+	if (lvds->suspend)
+		goto out;
+
+	rockchip_lvds_poweroff(lvds);
+	lvds->suspend = true;
+
+out:
+	mutex_unlock(&lvds->suspend_lock);
+}
+
+static void rockchip_lvds_bridge_pre_enable(struct drm_bridge *bridge)
+{
+}
+
+/*
+ * post_disable is called right after encoder prepare, so do lvds and crtc
+ * mode config here.
+ */
+static void rockchip_lvds_bridge_post_disable(struct drm_bridge *bridge)
+{
+	struct rockchip_lvds *lvds = bridge_to_lvds(bridge);
+	struct drm_connector *connector;
+	int ret, connector_type = DRM_MODE_CONNECTOR_Unknown;
+	struct rockchip_crtc_state *s;
+
+	if (!bridge->encoder->crtc)
+		return;
+
+	list_for_each_entry(connector, &bridge->dev->mode_config.connector_list,
+			head) {
+		if (connector->encoder == bridge->encoder)
+			connector_type = connector->connector_type;
+	}
+
+    s = to_rockchip_crtc_state(bridge->encoder->crtc->state);
+	s->output_mode = ROCKCHIP_OUT_MODE_P888;
+	s->output_type = connector_type;
+
+/*
+	ret = rockchip_drm_crtc_mode_config(bridge->encoder->crtc,
+						connector_type,
+						ROCKCHIP_OUT_MODE_P888);
+	if (ret < 0) {
+		dev_err(lvds->dev, "Could not set crtc mode config: %d\n", ret);
+		return;
+	}
+*/
+
+	ret = rockchip_lvds_set_vop_source(lvds, bridge->encoder);
+	if (ret < 0) {
+		dev_err(lvds->dev, "Could not set vop source: %d\n", ret);
+		return;
+	}
+}
+
+static struct drm_bridge_funcs rockchip_lvds_bridge_funcs = {
+	.mode_set = rockchip_lvds_bridge_mode_set,
+	.enable = rockchip_lvds_bridge_enable,
+	.disable = rockchip_lvds_bridge_disable,
+	.pre_enable = rockchip_lvds_bridge_pre_enable,
+	.post_disable = rockchip_lvds_bridge_post_disable,
+};
+
 static struct rockchip_lvds_soc_data rk3288_lvds_data = {
 	.grf_soc_con6 = 0x025c,
 	.grf_soc_con7 = 0x0260,
@@ -442,6 +577,12 @@ static int rockchip_lvds_bind(struct device *dev, struct device *master,
 	int ret;
 
 	lvds->drm_dev = drm_dev;
+	
+	/* move panel judge into bind, since we jump it when probe */
+	if (!lvds->panel) {
+		DRM_ERROR("failed to find panel\n");
+		return -EPROBE_DEFER;
+	}
 
 	encoder = &lvds->encoder;
 	encoder->possible_crtcs = drm_of_find_possible_crtcs(drm_dev,
@@ -500,10 +641,13 @@ static void rockchip_lvds_unbind(struct device *dev, struct device *master,
 
 	rockchip_lvds_encoder_dpms(&lvds->encoder, DRM_MODE_DPMS_OFF);
 
-	drm_panel_detach(lvds->panel);
-
-	drm_connector_cleanup(&lvds->connector);
-	drm_encoder_cleanup(&lvds->encoder);
+	if (lvds->panel) {
+		drm_panel_detach(lvds->panel);
+		drm_connector_cleanup(&lvds->connector);
+		drm_encoder_cleanup(&lvds->encoder);
+	} else {
+		drm_bridge_remove(&lvds->bridge);
+	}
 
 	pm_runtime_disable(dev);
 }
@@ -512,6 +656,24 @@ static const struct component_ops rockchip_lvds_component_ops = {
 	.bind = rockchip_lvds_bind,
 	.unbind = rockchip_lvds_unbind,
 };
+
+static int rockchip_lvds_bridge_bind(struct device *dev, struct device *master,
+				void *data)
+{
+	return 0;
+}
+
+static void rockchip_lvds_bridge_unbind(struct device *dev, struct device *master,
+				void *data)
+{
+	/* do nothing */
+}
+
+static const struct component_ops rockchip_lvds_bridge_component_ops = {
+	.bind = rockchip_lvds_bridge_bind,
+	.unbind = rockchip_lvds_bridge_unbind,
+};
+
 
 static int rockchip_lvds_probe(struct platform_device *pdev)
 {
@@ -597,19 +759,53 @@ static int rockchip_lvds_probe(struct platform_device *pdev)
 	output_node = of_parse_phandle(dev->of_node, "rockchip,panel", 0);
 	if (!output_node) {
 		DRM_ERROR("failed to find rockchip,panel dt node\n");
-		return -ENODEV;
+		//return -ENODEV;
+	} else {
+		lvds->panel = of_drm_find_panel(output_node);
+		of_node_put(output_node);
 	}
-
-	lvds->panel = of_drm_find_panel(output_node);
-	of_node_put(output_node);
-	if (!lvds->panel) {
-		DRM_ERROR("failed to find panel\n");
-		return -EPROBE_DEFER;
-	}
-
+	
 	ret = clk_prepare(lvds->pclk);
 	if (ret < 0) {
 		dev_err(dev, "failed to prepare pclk_lvds\n");
+		DRM_ERROR("failed to prepare pclk_lvds\n");
+		return ret;
+	}
+
+	/* can't find lvds panel by rockchip,panel node, so we add a bridge here */
+	if(!lvds->panel) {
+		struct device_node *port;
+
+		port = of_graph_get_port_by_id(dev->of_node, 1);
+		if(port) {
+			struct device_node *endpoint;
+
+			endpoint = of_get_child_by_name(port, "endpoint");
+			if(endpoint) {
+				output_node = of_graph_get_remote_port_parent(endpoint);
+				of_node_put(endpoint);
+			}
+		}
+		if(!output_node) {
+			DRM_ERROR("failed to find endpoint in the port\n");
+			return -ENODEV;
+		}
+
+		lvds->bridge.funcs = &rockchip_lvds_bridge_funcs;
+		lvds->bridge.of_node = dev->of_node;
+
+		ret = drm_bridge_add(&lvds->bridge);
+		if(ret) {
+			dev_err(&pdev->dev, "failed to add bridge %d\n", ret);
+			return -EPROBE_DEFER;
+		}
+
+		ret = component_add(&pdev->dev, &rockchip_lvds_bridge_component_ops);
+		if (ret < 0)
+			drm_bridge_remove(&lvds->bridge);
+
+		pm_runtime_enable(dev);
+		
 		return ret;
 	}
 
@@ -625,6 +821,11 @@ static int rockchip_lvds_remove(struct platform_device *pdev)
 	struct rockchip_lvds *lvds = dev_get_drvdata(&pdev->dev);
 
 	component_del(&pdev->dev, &rockchip_lvds_component_ops);
+	if(!lvds->panel) {
+		component_del(&pdev->dev, &rockchip_lvds_bridge_component_ops);
+		drm_bridge_remove(&lvds->bridge);
+	}
+	
 	clk_unprepare(lvds->pclk);
 
 	return 0;
