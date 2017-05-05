@@ -1456,6 +1456,8 @@ static void vop_crtc_enable(struct drm_crtc *crtc)
 	VOP_CTRL_SET(vop, pin_pol, val);
 	switch (s->output_type) {
 	case DRM_MODE_CONNECTOR_LVDS:
+	case DRM_MODE_CONNECTOR_VGA:
+	case DRM_MODE_CONNECTOR_TV:
 		VOP_CTRL_SET(vop, rgb_en, 1);
 		VOP_CTRL_SET(vop, rgb_pin_pol, val);
 		break;
