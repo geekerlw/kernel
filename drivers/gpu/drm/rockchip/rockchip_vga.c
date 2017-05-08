@@ -177,7 +177,7 @@ static bool rockchip_vga_encoder_mode_fixup(struct drm_encoder *encoder,
 
 static void rockchip_vga_encoder_prepare(struct drm_encoder *encoder)
 {
-	dump_stack();
+	//dump_stack();
 }
 
 static void rockchip_vga_encoder_mode_set(struct drm_encoder *encoder,
