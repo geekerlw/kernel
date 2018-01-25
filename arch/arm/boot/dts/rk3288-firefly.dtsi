@@ -703,6 +703,10 @@
 	status = "okay";
 };
 
+&usb_host0_ehci {
+	pinctrl-names = "default";
+	status = "okay";
+};
 &usb_host1 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&usbhub_rst>;
